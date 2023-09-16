@@ -206,6 +206,9 @@ foreach i = {1-31} in
 def FeatureSaveRestore : SubtargetFeature<"save-restore", "EnableSaveRestore",
                                           "true", "Enable save/restore.">;
 
+def FeatureRetpoline : SubtargetFeature<"retpoline", "ActivateRetpoline",
+										"true", "Activate Spectre v2 mitigation Retpoline">;
+
 //===----------------------------------------------------------------------===//
 // Named operands for CSR instructions.
 //===----------------------------------------------------------------------===//

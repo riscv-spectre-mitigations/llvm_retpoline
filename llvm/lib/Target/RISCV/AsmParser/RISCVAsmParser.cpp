@@ -2501,7 +2501,6 @@ bool RISCVAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
                                         OperandVector &Operands,
                                         MCStreamer &Out) {
   Inst.setLoc(IDLoc);
-
   switch (Inst.getOpcode()) {
   default:
     break;
@@ -2659,6 +2658,85 @@ bool RISCVAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
 
     return false;
   }
+  //Retpoline for inline assembly
+  case RISCV::JALR:  {
+   
+    if (getSTI().hasFeature(RISCV::FeatureRetpoline)) 
+    if (Inst.getOperand(0).getReg() == RISCV::X1 && Inst.getOperand(1).getReg() != RISCV::X1) {
+     
+      emitToStreamer(Out, MCInstBuilder(RISCV::JAL)
+        .addReg(RISCV::X1)
+        .addImm(8));
+  
+      emitToStreamer(Out, MCInstBuilder(RISCV::JAL)
+        .addReg(RISCV::X0)
+        .addImm(0));
+        
+      // 2 instructions * 2 bytes ( * 2 when the C extension is not used)  
+      uint64_t SkippedBytes = 2 * 2  * (!getSTI().hasFeature(RISCV::FeatureStdExtC) + 1);
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::ADDI)
+        .addReg(RISCV::X1)
+        .addOperand(Inst.getOperand(1))
+        .addImm(SkippedBytes));
+	
+      // 2 registers * 4 bytes ( * 2 for 64 bits)
+      uint64_t NumBytes = 2 * 4 * (isRV64() + 1);
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::ADDI)
+        .addReg(RISCV::X2)
+        .addReg(RISCV::X2)
+        .addImm(-NumBytes));
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::AUIPC)
+        .addOperand(Inst.getOperand(1))
+        .addImm(0));
+	
+      uint64_t ReturnAddress = getSTI().hasFeature(RISCV::FeatureStdExtC)? 10 : 16;
+      emitToStreamer(Out, MCInstBuilder(RISCV::ADDI)
+        .addOperand(Inst.getOperand(1))
+        .addOperand(Inst.getOperand(1))
+        .addImm(ReturnAddress));
+	
+      uint64_t StoreOpcode = isRV64() ? RISCV::SD : RISCV::SW;
+      emitToStreamer(Out, MCInstBuilder(StoreOpcode)
+        .addOperand(Inst.getOperand(1))
+        .addReg(RISCV::X2)
+        .addImm(4 * (isRV64() + 1)));
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::JALR)
+        .addReg(RISCV::X0)
+        .addReg(RISCV::X1)
+        .addImm(0));
+
+      return false;
+    }
+    else if (Inst.getOperand(0).getReg() == RISCV::X0 && Inst.getOperand(1).getReg() != RISCV::X1) {
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::JAL)
+        .addReg(RISCV::X1)
+        .addImm(8));
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::JAL)
+        .addReg(RISCV::X0)
+        .addImm(0));
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::ADDI)
+        .addReg(RISCV::X1)
+        .addOperand(Inst.getOperand(1))
+        .addImm(0));
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::JALR)
+        .addReg(RISCV::X0)
+        .addReg(RISCV::X1)
+        .addImm(0));
+
+      return false;
+    }
+
+    }
+    
+
   }
 
   emitToStreamer(Out, Inst);

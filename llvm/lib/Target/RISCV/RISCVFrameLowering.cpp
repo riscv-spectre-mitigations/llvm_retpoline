@@ -415,8 +415,23 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
     RealStackSize = FirstSPAdjustAmount;
   }
 
-  // Allocate space on the stack if necessary.
-  adjustReg(MBB, MBBI, DL, SPReg, SPReg, -StackSize, MachineInstr::FrameSetup);
+  //Currently, only ra and fp are saved, but we need to know their size
+  uint64_t Size = 0;
+  if (STI.hasFeature(RISCV::FeatureRetpoline)) {
+    for (const auto &Info : MFI.getCalleeSavedInfo()) {
+      int FrameIdx = Info.getFrameIdx();
+      if (MFI.getStackID(FrameIdx) != TargetStackID::Default)
+        continue;
+
+      Size += MFI.getObjectSize(FrameIdx);
+    }
+
+    // Allocate space for ra and fp on the stack
+    adjustReg(MBB, MBBI, DL, SPReg, SPReg, -Size, MachineInstr::FrameSetup);
+  }
+  else 
+    //Allocate space for ra and fp on the stack if necessary.
+    adjustReg(MBB, MBBI, DL, SPReg, SPReg, -StackSize, MachineInstr::FrameSetup);
 
   // Emit ".cfi_def_cfa_offset RealStackSize"
   unsigned CFIIndex = MF.addFrameInst(
@@ -460,10 +475,14 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
     if (STI.isRegisterReservedByUser(FPReg))
       MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported{
           MF.getFunction(), "Frame pointer required, but has been reserved."});
-
-    adjustReg(MBB, MBBI, DL, FPReg, SPReg,
-              RealStackSize - RVFI->getVarArgsSaveSize(),
-              MachineInstr::FrameSetup);
+    if (STI.hasFeature(RISCV::FeatureRetpoline))
+        adjustReg(MBB, MBBI, DL, FPReg, SPReg,
+                  Size,
+                  MachineInstr::FrameSetup);
+    else
+      adjustReg(MBB, MBBI, DL, FPReg, SPReg,
+        RealStackSize - RVFI->getVarArgsSaveSize(),
+        MachineInstr::FrameSetup);
 
     // Emit ".cfi_def_cfa $fp, RVFI->getVarArgsSaveSize()"
     unsigned CFIIndex = MF.addFrameInst(MCCFIInstruction::cfiDefCfa(
@@ -492,6 +511,11 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
           .setMIFlag(MachineInstr::FrameSetup);
     }
   }
+
+  //Adjust sp again 
+  if (STI.hasFeature(RISCV::FeatureRetpoline) && Size < StackSize)
+    adjustReg(MBB, MBBI, DL, SPReg, SPReg, Size-StackSize, MachineInstr::FrameSetup);
+
 
   if (RVVStackSize)
     adjustStackForRVV(MF, MBB, MBBI, DL, -RVVStackSize,
@@ -919,7 +943,6 @@ void RISCVFrameLowering::processFunctionBeforeFrameFinalized(
     int FrameIdx = Info.getFrameIdx();
     if (MFI.getStackID(FrameIdx) != TargetStackID::Default)
       continue;
-
     Size += MFI.getObjectSize(FrameIdx);
   }
   RVFI->setCalleeSavedStackSize(Size);

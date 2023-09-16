@@ -64,6 +64,8 @@ private:
                          MachineBasicBlock::iterator MBBI, unsigned Opcode);
   bool expandVSPILL(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
   bool expandVRELOAD(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
+  bool expandPseudoCALLIndirect(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
+  bool expandPseudoBRIND(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
 };
 
 char RISCVExpandPseudo::ID = 0;
@@ -95,6 +97,7 @@ bool RISCVExpandPseudo::expandMI(MachineBasicBlock &MBB,
   // RISCVInstrInfo::getInstSizeInBytes hard-codes the number of expanded
   // instructions for each pseudo, and must be updated when adding new pseudos
   // or changing existing ones.
+
   switch (MBBI->getOpcode()) {
   case RISCV::PseudoLLA:
     return expandLoadLocalAddress(MBB, MBBI, NextMBBI);
@@ -150,6 +153,10 @@ bool RISCVExpandPseudo::expandMI(MachineBasicBlock &MBB,
   case RISCV::PseudoVRELOAD7_M1:
   case RISCV::PseudoVRELOAD8_M1:
     return expandVRELOAD(MBB, MBBI);
+  case RISCV::PseudoCALLIndirect:
+    return expandPseudoCALLIndirect(MBB, MBBI);
+  case RISCV::PseudoBRIND:
+    return expandPseudoBRIND(MBB, MBBI);
   }
 
   return false;
@@ -369,6 +376,90 @@ bool RISCVExpandPseudo::expandVRELOAD(MachineBasicBlock &MBB,
           .addReg(VL);
   }
   MBBI->eraseFromParent();
+  return true;
+}
+
+bool RISCVExpandPseudo::expandPseudoCALLIndirect(MachineBasicBlock &MBB,
+  MachineBasicBlock::iterator MBBI) {
+  Register Reg = MBBI->getOperand(0).getReg();
+  DebugLoc DL = MBBI->getDebugLoc();
+  MachineFunction *MF = MBB.getParent();
+  const auto &STI = MF->getSubtarget<RISCVSubtarget>();
+  if (!STI.hasFeature(RISCV::FeatureRetpoline))
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JALR))
+      .addReg(RISCV::X1)
+      .addReg(Reg)
+      .addImm(0);
+  else {
+    
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JAL))
+      .addReg(RISCV::X1)
+      .addImm(8);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JAL))
+      .addReg(RISCV::X0)
+      .addImm(0);
+    // 2 instructions * 2 bytes ( * 2 when the C extension is not used)  
+    uint64_t SkippedBytes = 2 * 2  * (!STI.hasFeature(RISCV::FeatureStdExtC) + 1);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI))
+      .addReg(RISCV::X1)
+      .addReg(Reg)
+      .addImm(SkippedBytes);
+    // 2 registers * 4 bytes ( * 2 for 64 bits)
+    uint64_t NumBytes = 2 * 4 * (STI.is64Bit() + 1);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI))
+      .addReg(RISCV::X2)
+      .addReg(RISCV::X2)
+      .addImm(-NumBytes);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::AUIPC))
+      .addReg(Reg) 
+      .addImm(0);
+    uint64_t ReturnAddress = STI.hasFeature(RISCV::FeatureStdExtC)? 10 : 16;
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI))
+      .addReg(Reg)
+      .addReg(Reg)
+      .addImm(ReturnAddress);
+    uint64_t StoreOpcode = STI.is64Bit() ? RISCV::SD : RISCV::SW;
+    BuildMI(MBB, MBBI, DL, TII->get(StoreOpcode))
+      .addReg(Reg)
+      .addReg(RISCV::X2)
+      .addImm(4 * (STI.is64Bit() + 1));
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JALR))
+      .addReg(RISCV::X0)
+      .addReg(RISCV::X1)
+      .addImm(0);
+  }
+  MBBI->eraseFromParent();
+  return true;
+}
+
+bool RISCVExpandPseudo::expandPseudoBRIND(MachineBasicBlock &MBB,
+  MachineBasicBlock::iterator MBBI) {
+  Register Reg = MBBI->getOperand(0).getReg();
+  DebugLoc DL = MBBI->getDebugLoc();
+  MachineFunction *MF = MBB.getParent();
+  const auto &STI = MF->getSubtarget<RISCVSubtarget>();
+  if(!STI.hasFeature(RISCV::FeatureRetpoline))
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JALR))
+      .addReg(RISCV::X0)
+      .addReg(Reg)
+      .addImm(0);
+  else {
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JAL))
+      .addReg(RISCV::X1)
+      .addImm(8);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JAL))
+      .addReg(RISCV::X0)
+      .addImm(0);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI))
+      .addReg(RISCV::X1)
+      .addReg(Reg)
+      .addImm(0);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JALR))
+      .addReg(RISCV::X0)
+      .addReg(RISCV::X1)
+      .addImm(0);
+  }
+    MBBI->eraseFromParent();
   return true;
 }
 

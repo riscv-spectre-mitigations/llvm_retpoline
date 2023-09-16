@@ -179,7 +179,6 @@ void RISCVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     report_fatal_error(
         "Frame offsets outside of the signed 32-bit range not supported");
   }
-
   MachineBasicBlock &MBB = *MI.getParent();
   bool FrameRegIsKill = false;
 
@@ -200,7 +199,6 @@ void RISCVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     ScalableFactorRegister =
         TII->getVLENFactoredAmount(MF, MBB, II, DL, ScalableValue);
   }
-
   if (!isInt<12>(Offset.getFixed())) {
     // The offset won't fit in an immediate, so use a scratch register instead
     // Modify Offset and FrameReg appropriately
@@ -223,20 +221,41 @@ void RISCVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
   if (!Offset.getScalable()) {
     // Offset = (fixed offset, 0)
-    MI.getOperand(FIOperandNum)
+    if (!IsRVVSpill) {
+      int64_t NewOffset = Offset.getFixed();
+      const auto &STI = MF.getSubtarget<RISCVSubtarget>(); 
+
+      if(STI.hasFeature(RISCV::FeatureRetpoline) && (MI.getOpcode() == RISCV::SW || MI.getOpcode() == RISCV::SD))
+        switch (MI.getOperand(0).getReg()) {
+          //ra
+        case RISCV::X1: {
+          NewOffset = MI.getOpcode() == RISCV::SW ? 4 : 8;
+          FrameReg = RISCV::X2;
+          break;
+        }
+         //fp
+        case RISCV::X8: {
+          NewOffset = 0;
+          FrameReg = RISCV::X2;
+          break;
+        }
+        default:
+          break;
+        }
+      MI.getOperand(FIOperandNum)
         .ChangeToRegister(FrameReg, false, false, FrameRegIsKill);
-    if (!IsRVVSpill)
-      MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset.getFixed());
+      MI.getOperand(FIOperandNum + 1).ChangeToImmediate(NewOffset);
+    }
     else {
       if (Offset.getFixed()) {
         Register ScratchReg = MRI.createVirtualRegister(&RISCV::GPRRegClass);
         BuildMI(MBB, II, DL, TII->get(RISCV::ADDI), ScratchReg)
           .addReg(FrameReg, getKillRegState(FrameRegIsKill))
           .addImm(Offset.getFixed());
-        MI.getOperand(FIOperandNum)
-          .ChangeToRegister(ScratchReg, false, false, true);
       }
     }
+    MI.getOperand(FIOperandNum)
+      .ChangeToRegister(FrameReg, false, false, FrameRegIsKill);
   } else {
     // Offset = (fixed offset, scalable offset)
     // Step 1, the scalable offset, has already been computed.
