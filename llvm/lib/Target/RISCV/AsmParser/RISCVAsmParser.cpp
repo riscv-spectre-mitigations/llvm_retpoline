@@ -2733,10 +2733,75 @@ bool RISCVAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
 
       return false;
     }
-
+    break;
     }
-    
+  case RISCV::PseudoCALL: {
 
+    const RISCVMCExpr *RISCVExpr = dyn_cast<RISCVMCExpr>(Inst.getOperand(0).getExpr());
+    const MCSymbolRefExpr *Symbol = dyn_cast<MCSymbolRefExpr>(RISCVExpr->getSubExpr());
+ 
+    if (getSTI().hasFeature(RISCV::FeatureRetpoline)) 
+      if (getTargetOptions().RSBProtectedFunctions.find(
+        Symbol->getSymbol().getName().str()) != std::string::npos) {
+      MCInst Inst2;
+      Inst2.clear();
+      Inst2.setLoc(IDLoc);
+      Inst2.setOpcode(Inst.getOpcode());
+      Inst2.addOperand(MCOperand::createReg(RISCV::X1));
+      Inst2.addOperand(Inst.getOperand(0));
+
+      //change immediates here and maybe here
+      emitToStreamer(Out, MCInstBuilder(RISCV::JAL)
+        .addReg(RISCV::X1)
+        .addImm(8));
+      emitToStreamer(Out, MCInstBuilder(RISCV::JAL)
+        .addReg(RISCV::X0)
+        .addImm(0));
+
+      emitLoadAddress(Inst2, IDLoc, Out);
+
+      // 2 instructions * 2 bytes ( * 2 when the C extension is not used)  
+      uint64_t SkippedBytes = 2 * 2 * (!getSTI().hasFeature(RISCV::FeatureStdExtC) + 1);
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::ADDI)
+        .addReg(RISCV::X1)
+        .addReg(RISCV::X1)
+        .addImm(SkippedBytes));
+
+      // 2 registers * 4 bytes ( * 2 for 64 bits)
+      uint64_t NumBytes = 2 * 4 * (isRV64() + 1);
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::ADDI)
+        .addReg(RISCV::X2)
+        .addReg(RISCV::X2)
+        .addImm(-NumBytes));
+
+      //we use a non-callee-saved register - t1
+      emitToStreamer(Out, MCInstBuilder(RISCV::AUIPC)
+        .addReg(RISCV::X6)
+        .addImm(0));
+
+      uint64_t ReturnAddress = getSTI().hasFeature(RISCV::FeatureStdExtC) ? 10 : 16;
+      emitToStreamer(Out, MCInstBuilder(RISCV::ADDI)
+        .addReg(RISCV::X6)
+        .addReg(RISCV::X6)
+        .addImm(ReturnAddress));
+
+      uint64_t StoreOpcode = isRV64() ? RISCV::SD : RISCV::SW;
+      emitToStreamer(Out, MCInstBuilder(StoreOpcode)
+        .addReg(RISCV::X6)
+        .addReg(RISCV::X2)
+        .addImm(4 * (isRV64() + 1)));
+
+      emitToStreamer(Out, MCInstBuilder(RISCV::JALR)
+        .addReg(RISCV::X0)
+        .addReg(RISCV::X1)
+        .addImm(0));
+
+      return false;
+    }
+    break;
+  }
   }
 
   emitToStreamer(Out, Inst);

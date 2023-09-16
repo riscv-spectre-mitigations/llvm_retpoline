@@ -3242,6 +3242,9 @@ def mno_stackrealign : Flag<["-"], "mno-stackrealign">, Group<m_Group>;
 
 def mretpoline : Flag<["-"], "mretpoline">, Group<m_Group>, Flags<[CoreOption,NoXarchOption]>;
 def mno_retpoline : Flag<["-"], "mno-retpoline">, Group<m_Group>, Flags<[CoreOption,NoXarchOption]>;
+def mrsb_protect : Joined<["-"], "mrsb-protect=">, Group<m_Group>,  MarshallingInfoString<CodeGenOpts<"RSBProtectedFunctions">>,
+  HelpText<"Specify the name of the functions to be protected from RSBSpectre">,
+  Flags<[CC1Option]>;
 defm speculative_load_hardening : BoolOption<"m", "speculative-load-hardening",
   CodeGenOpts<"SpeculativeLoadHardening">, DefaultFalse,
   PosFlag<SetTrue, [CC1Option]>, NegFlag<SetFalse>, BothFlags<[CoreOption]>>,

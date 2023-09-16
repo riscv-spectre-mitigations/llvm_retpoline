@@ -62,6 +62,7 @@ public:
   std::string ABIName;
   std::string AssemblyLanguage;
   std::string SplitDwarfFile;
+  std::string RSBProtectedFunctions;
 
   const char *Argv0 = nullptr;
   ArrayRef<const char *> CommandLineArgs;
@@ -82,6 +83,8 @@ public:
   /// target, e.g. masm.
   StringRef getAssemblyLanguage() const;
 };
+
+
 
 } // end namespace llvm
 

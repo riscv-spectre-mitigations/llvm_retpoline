@@ -142,7 +142,7 @@ namespace llvm {
           SupportsDebugEntryValues(false), EnableDebugEntryValues(false),
           ValueTrackingVariableLocations(false),
           ForceDwarfFrameSection(false), XRayOmitFunctionIndex(false),
-          DebugStrictDwarf(false),
+          DebugStrictDwarf(false), RSBProtectedFunctions(""),
           FPDenormalMode(DenormalMode::IEEE, DenormalMode::IEEE) {}
 
     /// DisableFramePointerElim - This returns true if frame pointer elimination
@@ -346,6 +346,9 @@ namespace llvm {
     /// -fstack-usage. If empty, it can be implied that -fstack-usage is not
     /// passed on the command line.
     std::string StackUsageOutput;
+
+    //The functions to be protected from Spectre RSB.
+    std::string RSBProtectedFunctions;
 
     /// If greater than 0, override TargetLoweringBase::PrefLoopAlignment.
     unsigned LoopAlignment = 0;

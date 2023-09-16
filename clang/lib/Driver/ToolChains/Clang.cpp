@@ -5828,6 +5828,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                    options::OPT_foperator_names, false))
     CmdArgs.push_back("-fno-operator-names");
 
+  if (Args.hasArg(options::OPT_mretpoline))
+    Args.AddLastArg(CmdArgs, options::OPT_mrsb_protect);
+
   // Forward -f (flag) options which we can pass directly.
   Args.AddLastArg(CmdArgs, options::OPT_femit_all_decls);
   Args.AddLastArg(CmdArgs, options::OPT_fheinous_gnu_extensions);

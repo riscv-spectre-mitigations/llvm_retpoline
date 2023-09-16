@@ -64,6 +64,7 @@ private:
                          MachineBasicBlock::iterator MBBI, unsigned Opcode);
   bool expandVSPILL(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
   bool expandVRELOAD(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
+  bool expandPseudoCALL(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI, MachineBasicBlock::iterator &NextMBBI);
   bool expandPseudoCALLIndirect(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
   bool expandPseudoBRIND(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
 };
@@ -72,6 +73,7 @@ char RISCVExpandPseudo::ID = 0;
 
 bool RISCVExpandPseudo::runOnMachineFunction(MachineFunction &MF) {
   TII = static_cast<const RISCVInstrInfo *>(MF.getSubtarget().getInstrInfo());
+
   bool Modified = false;
   for (auto &MBB : MF)
     Modified |= expandMBB(MBB);
@@ -153,6 +155,8 @@ bool RISCVExpandPseudo::expandMI(MachineBasicBlock &MBB,
   case RISCV::PseudoVRELOAD7_M1:
   case RISCV::PseudoVRELOAD8_M1:
     return expandVRELOAD(MBB, MBBI);
+  case RISCV::PseudoCALL:
+    return expandPseudoCALL(MBB, MBBI, NextMBBI);
   case RISCV::PseudoCALLIndirect:
     return expandPseudoCALLIndirect(MBB, MBBI);
   case RISCV::PseudoBRIND:
@@ -377,6 +381,102 @@ bool RISCVExpandPseudo::expandVRELOAD(MachineBasicBlock &MBB,
   }
   MBBI->eraseFromParent();
   return true;
+}
+
+bool RISCVExpandPseudo::expandPseudoCALL(MachineBasicBlock &MBB,
+  MachineBasicBlock::iterator MBBI, MachineBasicBlock::iterator &NextMBBI) {
+  MachineFunction *MF = MBB.getParent();
+  const auto &STI = MF->getSubtarget<RISCVSubtarget>();
+  std::string RSBProtectedFunctions = MF->getTarget().Options.RSBProtectedFunctions;
+
+  if (STI.hasFeature(RISCV::FeatureRetpoline)) {
+
+    unsigned SecondOpcode;
+    unsigned FlagsHi;
+    if (MF->getTarget().isPositionIndependent()) {
+      const auto &STI = MF->getSubtarget<RISCVSubtarget>();
+      SecondOpcode = STI.is64Bit() ? RISCV::LD : RISCV::LW;
+      FlagsHi = RISCVII::MO_GOT_HI;
+    }
+    else {
+      SecondOpcode = RISCV::ADDI;
+      FlagsHi = RISCVII::MO_PCREL_HI;
+    }
+    MachineInstr &MI = *MBBI;
+    DebugLoc DL = MI.getDebugLoc();
+  
+    const MachineOperand &Symbol = MI.getOperand(0);
+
+    if(RSBProtectedFunctions.find(Symbol.getGlobal()->getName().str()) == std::string::npos) 
+          return true;
+
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JAL))
+      .addReg(RISCV::X1)
+      .addImm(8);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::JAL))
+      .addReg(RISCV::X0)
+      .addImm(0);
+   
+    MachineBasicBlock *NewMBB = MF->CreateMachineBasicBlock(MBB.getBasicBlock());
+
+    // Tell AsmPrinter that we unconditionally want the symbol of this label to be
+    // emitted.
+    NewMBB->setLabelMustBeEmitted();
+    MF->insert(++MBB.getIterator(), NewMBB);
+
+    BuildMI(NewMBB, DL, TII->get(RISCV::AUIPC), RISCV::X1)
+      .addDisp(Symbol, 0, FlagsHi);
+    BuildMI(NewMBB, DL, TII->get(SecondOpcode), RISCV::X1)
+      .addReg(RISCV::X1)
+      .addMBB(NewMBB, RISCVII::MO_PCREL_LO);
+    // 2 instructions * 2 bytes ( * 2 when the C extension is not used)  
+    uint64_t SkippedBytes = 2 * 2 * (!STI.hasFeature(RISCV::FeatureStdExtC) + 1);
+    BuildMI(NewMBB, DL, TII->get(RISCV::ADDI))
+      .addReg(RISCV::X1)
+      .addReg(RISCV::X1)
+      .addImm(SkippedBytes);
+    // 2 registers * 4 bytes ( * 2 for 64 bits)
+    uint64_t NumBytes = 2 * 4 * (STI.is64Bit() + 1);
+    BuildMI(NewMBB, DL, TII->get(RISCV::ADDI))
+      .addReg(RISCV::X2)
+      .addReg(RISCV::X2)
+      .addImm(-NumBytes);
+    //we use a non-callee-saved register - t1
+    BuildMI(NewMBB, DL, TII->get(RISCV::AUIPC))
+      .addReg(RISCV::X6) 
+      .addImm(0);
+    uint64_t ReturnAddress = STI.hasFeature(RISCV::FeatureStdExtC) ? 10 : 16;
+    BuildMI(NewMBB, DL, TII->get(RISCV::ADDI))
+      .addReg(RISCV::X6)
+      .addReg(RISCV::X6)
+      .addImm(ReturnAddress);
+    uint64_t StoreOpcode = STI.is64Bit() ? RISCV::SD : RISCV::SW;
+    BuildMI(NewMBB, DL, TII->get(StoreOpcode))
+      .addReg(RISCV::X6)
+      .addReg(RISCV::X2)
+      .addImm(4 * (STI.is64Bit() + 1));
+    BuildMI(NewMBB, DL, TII->get(RISCV::JALR))
+      .addReg(RISCV::X0)
+      .addReg(RISCV::X1)
+      .addImm(0);
+
+
+    // Move all the rest of the instructions to NewMBB.
+    NewMBB->splice(NewMBB->end(), &MBB, std::next(MBBI), MBB.end());
+    // Update machine-CFG edges.
+    NewMBB->transferSuccessorsAndUpdatePHIs(&MBB);
+    // Make the original basic block fall-through to the new.
+    MBB.addSuccessor(NewMBB);
+
+    // Make sure live-ins are correctly attached to this new basic block.
+    LivePhysRegs LiveRegs;
+    computeAndAddLiveIns(LiveRegs, *NewMBB);
+
+    NextMBBI = MBB.end();
+    MI.eraseFromParent();
+  }
+  return true;
+ 
 }
 
 bool RISCVExpandPseudo::expandPseudoCALLIndirect(MachineBasicBlock &MBB,
